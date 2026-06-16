@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "no"]
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: pancake
+      POSTGRES_PASSWORD: pancake
+      POSTGRES_DB: pancakeflow
+    volumes:
+      - ./data/migrations:/docker-entrypoint-initdb.d:ro
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+
+  ingestion:
+    build: { context: ., dockerfile: services/ingestion/Dockerfile }
+    env_file: .env
+    depends_on: [redis, timescaledb]
+    restart: unless-stopped
+
+  agents:
+    build: { context: ., dockerfile: agents/Dockerfile }
+    env_file: .env
+    depends_on: [redis]
+    restart: unless-stopped
+
+  execution:
+    build: { context: ., dockerfile: services/execution/Dockerfile }
+    env_file: .env
+    depends_on: [redis]
+    restart: unless-stopped
+
+  api:
+    build: { context: ., dockerfile: services/api/Dockerfile }
+    env_file: .env
+    ports: ["8000:8000"]
+    depends_on: [redis, timescaledb]
+    restart: unless-stopped
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    environment:
+      NEXT_PUBLIC_API: "http://localhost:8000"
+    ports: ["3000:3000"]
+    depends_on: [api]

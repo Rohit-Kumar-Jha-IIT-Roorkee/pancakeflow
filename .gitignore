@@ -1,0 +1,10 @@
+node_modules/
+.env
+dump.rdb
+__pycache__/
+*.pyc
+.next/
+dist/
+out/
+build/
+.DS_Store
