@@ -9,6 +9,7 @@ services:
   - type: web
     name: pancake-api
     env: python
+    plan: free
     buildCommand: "pip install -r agents/requirements.txt"
     startCommand: "uvicorn services.api.app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
@@ -30,6 +31,7 @@ services:
   - type: worker
     name: pancake-agents
     env: python
+    plan: free
     buildCommand: "pip install -r agents/requirements.txt"
     startCommand: "python scripts/seed_market.py && python -m agents.main"
     envVars:
@@ -49,6 +51,7 @@ services:
   - type: web
     name: pancake-dashboard
     env: node
+    plan: free
     buildCommand: "npm install -g pnpm && pnpm install && pnpm --filter @pancakeflow/web build"
     startCommand: "pnpm --filter @pancakeflow/web start"
     envVars:
