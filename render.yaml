@@ -52,7 +52,7 @@ services:
     name: pancake-dashboard
     env: node
     plan: free
-    buildCommand: "npm install -g pnpm && pnpm install && pnpm --filter @pancakeflow/web build"
+    buildCommand: "corepack enable && pnpm install && pnpm --filter @pancakeflow/web build"
     startCommand: "pnpm --filter @pancakeflow/web start"
     envVars:
       # After first deploy: paste the pancake-api URL here and redeploy dashboard.
