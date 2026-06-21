@@ -28,12 +28,15 @@ services:
         generateValue: true
 
   # ── Python Agents (strategy + risk + portfolio swarm) ────────────────────────
-  - type: worker
+  # type:web not worker — Render free tier doesn't support background workers.
+  # agents_web_wrapper.py binds PORT for Render's health check while running
+  # the full agent loop in the main thread.
+  - type: web
     name: pancake-agents
     env: python
     plan: free
     buildCommand: "pip install -r agents/requirements.txt"
-    startCommand: "python scripts/seed_market.py && python -m agents.main"
+    startCommand: "python scripts/seed_market.py && python scripts/agents_web_wrapper.py"
     envVars:
       - key: REDIS_URL
         fromService:
