@@ -1,75 +1,162 @@
-# PancakeFlow — Autonomous Multi-Agent Trading System for PancakeSwap
+# PancakeFlow
 
-![Demo](docs/demo.gif)
-
-## Status: V3 (Production Hardened)
-PancakeFlow is currently capable of backtesting, dry-running, and live-executing arbitrage across PancakeSwap V2 and V3 pools.
-
-### Live Demo
-Check out the fully hosted demo:
-- **Dashboard**: [Deployed UI link goes here]
-- **API**: `https://api.pancakeflow.com/` (requires `X-API-Key`)
-
-A swarm of specialized AI agents that detect, gate, simulate, execute, and book
-arbitrage on PancakeSwap — MEV-aware, risk-first, regime-adaptive.
+**Autonomous multi-agent arbitrage system for PancakeSwap V2 + V3 on BNB Chain.**  
 Built for Mid Prep PS-2 (PancakeSwap × IIT Roorkee).
 
-See `PancakeSwap_MultiAgent_System_Blueprint.md` for the full architecture.
+[![CI](https://github.com/Rohit-Kumar-Jha-IIT-Roorkee/pancakeflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Rohit-Kumar-Jha-IIT-Roorkee/pancakeflow/actions)
 
-## What's implemented & verified
+**[Live Demo →](https://pancake-dashboard.onrender.com)** &nbsp;|&nbsp; **[API →](https://pancake-api.onrender.com/health)**
 
-| Phase | Module | Status |
-|---|---|---|
-| P1 | Ingestion → Redis market state graph (WS events, source scoring, regime) | ✅ boots, degrades gracefully |
-| P2 | `ArbExecutor.sol` — atomic profit-or-revert cycles + flash arb | ✅ **9/9 EVM-verified** |
-| P3 | Strategy (Bellman-Ford) + Risk gate + paper execution loop | ✅ **e2e: trade booked** |
-| P4 | TS execution service — testnet/live, MEV submit, retry, pause | ✅ typechecks |
-| P5 | Risk depth (breakers, Sharpe, drawdown) + Portfolio + Backtester | ✅ tested |
-| P6 | Next.js dashboard — P&L, agent rail, breaker banner, regime | ✅ builds |
-| P7 | Vector memory (RAG), NL console, what-if sim, agent decision graph | ✅ wired |
+> Free-tier cold start: first load may take ~30s. Refresh once if blank.
 
-The arbitrage math agrees to 4 decimals between the off-chain strategy (Python),
-the backtester, and the on-chain contract (Solidity) — all verified against the
-same pool values.
+---
 
-## Architecture in one breath
+## What it does
+
+A swarm of seven specialized agents continuously scans PancakeSwap pools for negative-arbitrage cycles, gates every trade through a structurally-unskippable risk system, dry-runs it against a fork, and executes in **paper mode** (or BNB testnet with a key). All decisions flow through an auditable pipeline visible in the live dashboard.
 
 ```
-RPC/WS/subgraph/oracle ─▶ ingestion (TS) ─▶ Redis market graph + event bus
-                                                     │
-   LangGraph-shaped orchestrator (Python): proposed ─▶ [risk gate] ─▶ [sim dry-run]
-   ─▶ [risk approve] ─▶ execution (paper | testnet ArbExecutor) ─▶ portfolio ledger
-                                                     │
-                          FastAPI gateway (REST+WS) ─▶ Next.js dashboard
+BSC RPC / WS / oracle / subgraph
+          │
+    ingestion (TS) ──▶ Redis market-state graph + event streams
+                                │
+         ┌──────────────────────▼──────────────────────────────┐
+         │           Orchestrator (LangGraph-style FSM)         │
+         │                                                       │
+         │  Strategy ──▶ Risk Gate ──▶ Simulation ──▶ Executor │
+         │  (Bellman-Ford)  (hard gate)  (fork dry-run)  (paper/testnet) │
+         └──────────────────────┬──────────────────────────────┘
+                                │
+                    Portfolio Ledger (Postgres + Redis)
+                                │
+              FastAPI REST/WS ──▶ Next.js Dashboard
 ```
-The risk gate is **structurally unskippable** — a proposal physically cannot reach
-execution without passing it. LLMs are out of the hot path (they adjust confidence
-and answer NL queries; they never compute prices or sign).
 
-## Quickstart (paper mode, no keys, no Postgres)
+---
+
+## Key technical details
+
+**Arbitrage detection**
+- Bellman-Ford negative-cycle detection over a weighted multigraph of V2 + V3 pools
+- V3 virtual reserves reconstructed from `sqrtPriceX96` and per-tick `liquidity`
+- Closed-form optimal input sizing (2-hop); golden-section search for N-hop
+- Off-chain AMM math (`cycle_math.py`) verified to 4 decimals against `ArbExecutor.sol`
+
+**Risk system**
+- Unskippable gate — orchestrator topology physically prevents any trade bypassing risk + sim
+- Circuit breaker trips on: oracle divergence > 300 bps, daily drawdown breach, N consecutive failures
+- Per-profile caps: conservative (2% / 3 concurrent), moderate (5% / 6), aggressive (10% / 12)
+- Sharpe, drawdown, and win-rate tracked live in the portfolio ledger
+
+**Execution**
+- Paper mode: full pipeline without any on-chain submission; AMM reserves updated in Redis after each fill so price impact is reflected on the next scan
+- Testnet mode: submits to `ArbExecutor.sol` on BNB testnet, parses `CycleExecuted` log for actual `amountOut`
+- Mainnet permanently gated — requires an explicit `MAINNET_OVERRIDE` env flag
+
+**Infrastructure**
+- Three-tier persistence: Postgres/TimescaleDB → Redis → in-memory (graceful degradation)
+- RAG memory: `sentence-transformers` (all-MiniLM-L6-v2) + Qdrant for strategy recall
+- CI/CD: GitHub Actions (ruff lint, tsc, forge test, pytest, docker build)
+- Observability: Prometheus metrics + Grafana dashboards
+
+---
+
+## Stack
+
+| Layer | Tech |
+|---|---|
+| Agents / API | Python 3.11, FastAPI, asyncio, Redis Streams |
+| Ingestion / Execution | TypeScript, ethers v6, WebSocket |
+| Smart Contract | Solidity 0.8, Foundry, flash-loan arbitrage |
+| Frontend | Next.js 14, React Flow, Recharts |
+| Data | PostgreSQL + TimescaleDB, Redis, Qdrant |
+| Infra | Docker Compose, Render, Prometheus, Grafana |
+
+---
+
+## Run locally (paper mode — no keys or Postgres needed)
 
 ```bash
-make infra            # redis + timescaledb + qdrant (Postgres optional)
+# 1. Start infrastructure
+make infra          # Redis + TimescaleDB + Qdrant via Docker
+
+# 2. Install dependencies
 pnpm install
 pip install -r agents/requirements.txt
 
-# 3 terminals:
-make ingest           # 1. live BNB data -> Redis  (needs BSC_RPC_WS in .env)
-make agents           # 2. the agent swarm (paper mode)
-make api & make web   # 3. API + dashboard -> http://localhost:3000
-```
-Without an RPC, seed a demo market with `tests/integration/test_e2e_loop.py` to
-watch a trade flow through the whole pipeline.
+# 3. Seed demo market state (creates a synthetic arb opportunity)
+make seed
 
-## Going live (testnet)
-1. Deploy the contract: `cd contracts && forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC --broadcast`
-2. Put the address in `ARB_EXECUTOR_ADDR`, set `EXEC_MODE=testnet`, `EXECUTOR_PK=…`.
-3. Seed testnet pools (signals still come from mainnet data — testnet liquidity is fake).
+# 4. Start everything (three terminals)
+make agents         # agent swarm — finds + executes arb in paper mode
+make api            # FastAPI gateway on :8000
+make web            # Next.js dashboard on :3000
+```
+
+Open **http://localhost:3000** — trades appear within ~10 seconds of the agents starting.
+
+**With a live BSC RPC** (optional, for real pool data):
+```bash
+echo "BSC_RPC_WS=wss://..." >> .env
+make ingest         # replaces the seed with live BNB Chain data
+```
+
+---
+
+## Testnet deployment
+
+```bash
+# Deploy the contract
+cd contracts
+forge script script/Deploy.s.sol --rpc-url $BSC_TESTNET_RPC --broadcast
+
+# Configure execution
+export ARB_EXECUTOR_ADDR=<deployed address>
+export EXEC_MODE=testnet
+export EXECUTOR_PK=<funded testnet key>
+```
+
+Pool data still flows from the ingestion service (mainnet prices, testnet execution).
+
+---
 
 ## Tests
-`tests/integration/README.md` — six suites, all passing. Contract: `contracts/`.
 
-## Caveats
-- Verify all token/pool/oracle addresses on BscScan before live use.
-- `forge test` is canonical for contracts; the EVM harness is a sandbox fallback.
-- Demo runs in paper mode by default; testnet execution needs a funded key.
+```bash
+make test           # forge tests (9 contract) + pytest (7 integration) + cycle-math unit
+```
+
+Integration tests run against a seeded Redis with no live RPC required. The circuit breaker, drawdown gate, concurrency limit, and Postgres ledger all have dedicated test coverage.
+
+---
+
+## Contract
+
+`contracts/src/ArbExecutor.sol` — atomic profit-or-revert arbitrage executor. Reverts the entire transaction if `amountOut < amountIn`, so no partial fills are ever booked. Supports flash-loan-funded cycles.
+
+---
+
+## Agents
+
+| Agent | Role |
+|---|---|
+| Strategy (A2) | Bellman-Ford scanner, trend signals, opportunity ranking |
+| Risk (A4) | Hard gate, circuit breaker, drawdown monitor, profile enforcement |
+| Orchestrator | FSM coordinator — only entity allowed to publish `trade.approved` |
+| Portfolio (A5) | Ledger, Sharpe/drawdown metrics, backtest engine |
+| Simulation | Fork dry-run, requote validation |
+| Liquidity (A6) | Pool tier scoring, imbalance detection, IL estimation |
+| Execution (A3) | Paper fills with reserve updates / testnet on-chain submission |
+
+---
+
+## Limitations
+
+- Paper-mode P&L is from the AMM formula at fill time; real directional P&L requires a position close event
+- Backtest requires historical pool snapshots (returns an honest error without them)
+- Free-tier deployment sleeps after 15 min of inactivity (~30s cold-start on next request)
+- Mainnet is permanently gated by design — this is a demonstrable prototype, not a custody product
+
+---
+
+*Mid Prep PS-2 — PancakeSwap × IIT Roorkee*
