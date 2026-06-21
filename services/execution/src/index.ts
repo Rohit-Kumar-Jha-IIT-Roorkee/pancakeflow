@@ -1,4 +1,4 @@
-import { redis, STREAM_TRADE, UI_CHANNEL } from "./redis.js";
+import { redis, STREAM_TRADE, UI_CHANNEL, KEY_POSITIONS } from "./redis.js";
 import { cfg } from "./config.js";
 import { logger } from "./logger.js";
 import { paperFill } from "./modes/paper.js";
@@ -68,8 +68,12 @@ async function main(): Promise<void> {
         if (f.type === "trade.approved" && f.payload) {
           try {
             const sized = JSON.parse(f.payload) as SizedTrade;
+            await redis.sadd(KEY_POSITIONS, sized.proposal.id);
             const fill = await execute(sized);
             await publishFill(fill.status === "executed" ? "trade.executed" : "trade.failed", fill);
+            if (sized.proposal.kind === "cycle" || fill.status === "failed") {
+              await redis.srem(KEY_POSITIONS, sized.proposal.id);
+            }
             logger.info({ id: fill.tradeId, status: fill.status, tx: fill.txHash }, "fill");
           } catch (e) { logger.error({ e: String(e) }, "execute error"); }
         }

@@ -3,7 +3,7 @@ math the live strategy uses (no sim-vs-live drift). Reports return, win rate,
 and a P&L curve. Works on synthetic data when no history is present."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from ...strategy.arbitrage.cycle_math import v2_amount_out, optimal_two_hop_input, evaluate_cycle
+from ...strategy.arbitrage.cycle_math import amount_out_with_fee, optimal_two_hop_input, evaluate_cycle
 
 @dataclass
 class BacktestResult:
@@ -27,8 +27,8 @@ def run_two_pool(snapshots_a: list[dict], snapshots_b: list[dict],
         rb0, rb1 = int(b["reserve0"]), int(b["reserve1"])
         # try WBNB->USDT on B, USDT->WBNB on A (and the reverse); take the better
         best = 0; best_amt = 0
-        for (h0, h1) in [((rb0, rb1), (ra1, ra0)), ((ra0, ra1), (rb1, rb0))]:
-            amt = optimal_two_hop_input(h0[0], h0[1], h1[0], h1[1])
+        for (h0, h1) in [((rb0, rb1, 2, 25), (ra1, ra0, 2, 25)), ((ra0, ra1, 2, 25), (rb1, rb0, 2, 25))]:
+            amt = optimal_two_hop_input(h0[0], h0[1], h0[3], h1[0], h1[1], h1[3])
             if amt <= 0: continue
             ev = evaluate_cycle([h0, h1], amt)
             if ev.profit_bps >= min_bps and ev.profit > best:

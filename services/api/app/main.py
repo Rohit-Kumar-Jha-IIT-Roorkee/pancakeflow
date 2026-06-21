@@ -2,9 +2,21 @@
 streams UI pushes over WS, and hosts the NL query + what-if endpoints (P7)."""
 from __future__ import annotations
 import asyncio, json, sys, os
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from fastapi import HTTPException, Depends, Request
+from pydantic import BaseModel
+from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from limits.storage import RedisStorage
 
 # make the agents package importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -16,6 +28,37 @@ from agents.common.llm import reason_json              # noqa: E402
 
 app = FastAPI(title="PancakeFlow API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# --- API Hardening: Rate Limiting & Auth ---
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+limiter = Limiter(key_func=get_remote_address, storage_uri=redis_url)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    expected = os.getenv("API_KEY", "demo-key")
+    if api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
+    return api_key
+
+class NLQueryRequest(BaseModel):
+    q: str
+
+class WhatIfRequest(BaseModel):
+    legs: list[dict]
+    amountIn: int
+    baseGasWei: int = 0
+    
+class BacktestRequest(BaseModel):
+    a_snaps: list[dict] | None = None
+    b_snaps: list[dict] | None = None
+    minBps: float = 10.0
+
+# --- Observability ---
+Instrumentator().instrument(app).expose(app)
 
 @app.on_event("startup")
 async def _startup():
@@ -59,10 +102,11 @@ async def agent_timeline(tradeId: str = "", limit: int = 200):
     return list(reversed(out[:limit]))
 
 @app.post("/nl/query")
-async def nl_query(body: dict):
+@limiter.limit("10/minute")
+async def nl_query(request: Request, body: NLQueryRequest, api_key: str = Depends(verify_api_key)):
     """BONUS: natural-language interface. Routes a question to live data.
     'show me arbitrage opportunities on BNB right now' -> current proposals."""
-    q = (body.get("q") or "").lower()
+    q = (body.q or "").lower()
     if "arbitrage" in q or "arb" in q or "opportun" in q:
         pools = await state.get_all_pools()
         from agents.strategy.arbitrage.scanner import build_edges, find_negative_cycle, size_and_score
@@ -82,21 +126,47 @@ async def nl_query(body: dict):
         return {"answer": f"{s['trades']} trades, {s['win_rate']}% win rate, "
                           f"${s['total_pnl_usd']} net P&L.", "data": s}
     # fallback to LLM if available
-    out = await reason_json(system="You answer questions about a crypto trading bot. Be brief.",
+    out = await reason_json(system="You answer questions about a crypto trading bot. Output JSON with an 'answer' string key. Be brief.",
                             user=q) if config.ANTHROPIC_KEY else None
     return {"answer": (out or {}).get("answer", "Try: 'show arbitrage', 'regime', or 'pnl'."), "data": None}
 
 @app.post("/simulate/whatif")
-async def whatif(body: dict):
+@limiter.limit("10/minute")
+async def whatif(request: Request, body: WhatIfRequest, api_key: str = Depends(verify_api_key)):
     """BONUS: what-if scenarios. body: {legs:[{reserveIn,reserveOut}], amountIn, liquidityMult, gasMult, baseGasWei}"""
-    hops = [(int(l["reserveIn"]), int(l["reserveOut"])) for l in body.get("legs", [])]
-    amt = int(body.get("amountIn", 0))
+    hops = [(int(l["reserveIn"]), int(l["reserveOut"]), int(l.get("poolType", 2)), int(l.get("feeBps", 25))) for l in body.legs]
+    amt = int(body.amountIn)
+    base_gas_wei = int(body.baseGasWei)
     res = []
     for lm in (1.0, 0.75, 0.5):
         for gm in (1.0, 2.0):
             res.append(scenarios.what_if(hops, amt, liquidity_mult=lm, gas_mult=gm,
-                                         base_gas_wei=int(body.get("baseGasWei", 0))))
+                                         base_gas_wei=base_gas_wei))
     return {"scenarios": res}
+
+@app.post("/simulate/backtest")
+@limiter.limit("10/minute")
+async def backtest_endpoint(request: Request, body: BacktestRequest, api_key: str = Depends(verify_api_key)):
+    """Expose the backtest engine."""
+    from agents.portfolio.backtest import engine
+    
+    a_snaps = body.a_snaps
+    b_snaps = body.b_snaps
+    
+    if not a_snaps or not b_snaps:
+        return {
+            "error": "No historical snapshots provided. Pumping real historical data into this endpoint is deferred.",
+            "trades": 0, "wins": 0, "winRate": 0, "totalProfitWei": "0", "equityCurve": []
+        }
+        
+    res = engine.run_two_pool(a_snaps, b_snaps, min_bps=body.minBps)
+    return {
+        "trades": res.trades,
+        "wins": res.wins,
+        "winRate": res.win_rate,
+        "totalProfitWei": str(res.total_profit_wei),
+        "equityCurve": res.equity_curve
+    }
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):

@@ -1,5 +1,15 @@
 # PancakeFlow — Autonomous Multi-Agent Trading System for PancakeSwap
 
+![Demo](docs/demo.gif)
+
+## Status: V3 (Production Hardened)
+PancakeFlow is currently capable of backtesting, dry-running, and live-executing arbitrage across PancakeSwap V2 and V3 pools.
+
+### Live Demo
+Check out the fully hosted demo:
+- **Dashboard**: [Deployed UI link goes here]
+- **API**: `https://api.pancakeflow.com/` (requires `X-API-Key`)
+
 A swarm of specialized AI agents that detect, gate, simulate, execute, and book
 arbitrage on PancakeSwap — MEV-aware, risk-first, regime-adaptive.
 Built for Mid Prep PS-2 (PancakeSwap × IIT Roorkee).

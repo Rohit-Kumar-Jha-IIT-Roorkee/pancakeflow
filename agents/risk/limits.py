@@ -13,7 +13,12 @@ def size_and_check(proposal_amount_wei: int, capital_usd: float, profile: Profil
     # cap trade size to profile's % of capital
     max_usd = capital_usd * profile.max_pos_pct_capital / 100.0
     max_wei = int(max_usd / max(start_token_usd, 1e-9) * 1e18)
-    sized = min(proposal_amount_wei, max_wei) if max_wei > 0 else proposal_amount_wei
+    
+    if proposal_amount_wei <= 0:
+        sized = max_wei
+    else:
+        sized = min(proposal_amount_wei, max_wei) if max_wei > 0 else proposal_amount_wei
+        
     if sized <= 0:
         return (False, 0, "sized to zero")
     return (True, sized, f"sized to {sized/1e18:.4f} (cap {profile.max_pos_pct_capital}% capital)")

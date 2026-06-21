@@ -8,3 +8,16 @@ dist/
 out/
 build/
 .DS_Store
+
+# Internal project planning — not for public repo
+plan.md
+CLAUDE.md
+
+# Python
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Logs
+*.log
+logs/

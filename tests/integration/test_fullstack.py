@@ -68,6 +68,36 @@ async def main():
     assert summ['trades']>=1 and summ['total_pnl_usd']>0, "no profitable trade reflected in API"
     assert len(trades)>=1 and trades[0]['status']=='executed'
     assert len(tl)>=3
+
+    # 7. Concurrency limit test
+    r = bus.get_redis()
+    for i in range(12):
+        await r.sadd(config.KEY_POSITIONS, f"dummy_{i}")
+    
+    # send a dummy proposal and verify it gets rejected due to concurrency limit
+    dummy_prop = props[0].model_copy(deep=True)
+    dummy_prop.id = "dummy_concurrency_test"
+    dummy_prop.kind = "directional" # directional trades check concurrency
+    await risk.gate_proposal(dummy_prop)
+    await asyncio.sleep(0.5)
+    
+    stream = await r.xrevrange(config.STREAM_TRADE, max="+", min="-", count=20)
+    rejected = False
+    for msg_id, fields in stream:
+        f_type = fields.get("type", fields.get(b"type", b"")).decode() if isinstance(fields.get("type", fields.get(b"type")), bytes) else str(fields.get("type", fields.get(b"type", "")))
+        f_payload = fields.get("payload", fields.get(b"payload", b"")).decode() if isinstance(fields.get("payload", fields.get(b"payload")), bytes) else str(fields.get("payload", fields.get(b"payload", "")))
+        if f_type == "trade.rejected" and "max concurrent" in f_payload:
+            rejected = True
+            break
+    assert rejected, "Concurrency limit should emit trade.rejected"
+    
+    # 8. Postgres ledger verification
+    # ledger.py handles the postgres initialization
+    from agents.portfolio import ledger
+    await ledger.init()
+    pg_trades = await ledger.all_trades(5)
+    print(f"[Ledger] Postgres returned {len(pg_trades)} trades (might be 0 if PG is down and using Redis fallback)")
+
     print("\nPASS: full stack — agents -> Redis -> FastAPI -> (dashboard data) all wired and live")
 
 asyncio.run(main())

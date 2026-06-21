@@ -14,6 +14,7 @@ from ..risk import agent as risk
 from ..simulation import fork_runner
 from ..portfolio import agent as portfolio
 from . import executor_paper
+from ..common.config import logger
 
 # in-flight sized trades awaiting sim+approval, keyed by trade id
 _pending: dict[str, SizedTrade] = {}
@@ -22,13 +23,17 @@ _proposals: dict[str, dict] = {}
 async def handle(type_: str, payload: dict) -> None:
     if type_ == "trade.proposed":
         p = TradeProposal(**payload)
+        log = logger.bind(tradeId=p.id, traceId=p.id)
+        log.info("trade.proposed received", kind=p.kind)
         _proposals[p.id] = payload
         await risk.gate_proposal(p)                       # -> emits trade.sized or trade.rejected
 
     elif type_ == "trade.sized":
         sized = SizedTrade(**payload)
+        log = logger.bind(tradeId=sized.proposal.id, traceId=sized.proposal.id)
         _pending[sized.proposal.id] = sized
         sim = await fork_runner.dry_run(sized)            # A7 requote dry-run
+        log.info("simulation.result", passed=sim.passed, reason=sim.reason)
         await bus.publish(config.STREAM_TRADE, "simulation.result", sim.model_dump())
         await risk.approve_after_sim(sized.proposal.id, sized, sim.passed, sim.reason)
         await _log(sized.proposal.id, "simulation", "result",
@@ -36,14 +41,25 @@ async def handle(type_: str, payload: dict) -> None:
 
     elif type_ == "trade.approved":
         sized = SizedTrade(**payload)
+        log = logger.bind(tradeId=sized.proposal.id, traceId=sized.proposal.id)
         sim = await fork_runner.dry_run(sized)
+        
+        # Track position (concurrency limit)
+        await bus.get_redis().sadd(config.KEY_POSITIONS, sized.proposal.id)
+        
         fill = await executor_paper.execute(sized, int(sim.requotedProfitWei or "0"))
+        log.info("executor.result", status=fill.status)
         ev = "trade.executed" if fill.status == "executed" else "trade.failed"
         await bus.publish(config.STREAM_TRADE, ev, fill.model_dump())
         await _log(fill.tradeId, "execution", fill.status,
                    {"out": fill.amountOutWei, "reason": fill.failReason})
         await risk.on_fill(fill.status)
         await portfolio.on_fill(fill, _proposals.get(fill.tradeId, {}))
+        
+        # Cycles and paper directional fills settle atomically; remove position.
+        if sized.proposal.kind == "cycle" or fill.status == "failed" or sized.proposal.kind == "directional":
+            await bus.get_redis().srem(config.KEY_POSITIONS, sized.proposal.id)
+            
         _pending.pop(fill.tradeId, None); _proposals.pop(fill.tradeId, None)
 
 async def _log(trade_id: str, agent: str, event: str, payload: dict) -> None:
@@ -52,14 +68,14 @@ async def _log(trade_id: str, agent: str, event: str, payload: dict) -> None:
 
 async def run() -> None:
     await portfolio.init()
-    print("[orchestrator] lifecycle FSM online")
+    logger.info("lifecycle FSM online", component="orchestrator")
     async for entry_id, type_, payload in bus.consume(config.STREAM_TRADE, "orchestrator", "orch-1"):
         if not entry_id:
             continue
         try:
             await handle(type_, payload)
         except Exception as e:
-            print(f"[orchestrator] error on {type_}: {e}")
+            logger.error("error processing event", type_=type_, error=str(e), component="orchestrator")
         finally:
             await bus.ack(config.STREAM_TRADE, "orchestrator", entry_id)
 

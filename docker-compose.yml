@@ -15,28 +15,56 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     ports: ["6333:6333"]
+    
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./infra/prometheus:/etc/prometheus
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3001:3000"]
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    depends_on: [prometheus]
 
   ingestion:
     build: { context: ., dockerfile: services/ingestion/Dockerfile }
     env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://pancake:pancake@timescaledb:5432/pancakeflow
     depends_on: [redis, timescaledb]
     restart: unless-stopped
 
   agents:
     build: { context: ., dockerfile: agents/Dockerfile }
     env_file: .env
-    depends_on: [redis]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://pancake:pancake@timescaledb:5432/pancakeflow
+      - CAPITAL_USD=150000
+      - RISK_PROFILE=aggressive
+    depends_on: [redis, timescaledb]
     restart: unless-stopped
 
   execution:
     build: { context: ., dockerfile: services/execution/Dockerfile }
     env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
     depends_on: [redis]
     restart: unless-stopped
 
   api:
     build: { context: ., dockerfile: services/api/Dockerfile }
     env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://pancake:pancake@timescaledb:5432/pancakeflow
+      - CAPITAL_USD=150000
+      - RISK_PROFILE=aggressive
     ports: ["8000:8000"]
     depends_on: [redis, timescaledb]
     restart: unless-stopped
@@ -44,6 +72,7 @@ services:
   web:
     build: { context: ., dockerfile: apps/web/Dockerfile }
     environment:
+      API_URL: "http://api:8000"
       NEXT_PUBLIC_API: "http://localhost:8000"
     ports: ["3000:3000"]
     depends_on: [api]

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 import asyncpg
+import os
 from ..common import config, bus
 
 _pool: Optional[asyncpg.Pool] = None
@@ -18,6 +19,15 @@ async def init() -> None:
     if config.DATABASE_URL:
         try:
             _pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=1, max_size=4)
+            # Apply migrations idempotently
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            migrations_dir = os.path.join(base_dir, "data", "migrations")
+            async with _pool.acquire() as c:
+                for filename in ["001_tables.sql", "002_timescale.sql"]:
+                    filepath = os.path.join(migrations_dir, filename)
+                    if os.path.exists(filepath):
+                        with open(filepath, "r") as f:
+                            await c.execute(f.read())
             return
         except Exception as e:
             print(f"[portfolio] DB unavailable ({e}); using Redis-backed ledger")

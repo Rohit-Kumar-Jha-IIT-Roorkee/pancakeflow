@@ -1,5 +1,5 @@
 import {
-  createWalletClient, createPublicClient, http, encodeFunctionData,
+  createWalletClient, createPublicClient, http, encodeFunctionData, decodeEventLog,
   type PublicClient, type WalletClient, type Account,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -23,6 +23,9 @@ export class OnchainExecutor {
   constructor() {
     if (!cfg.EXECUTOR_PK || !cfg.ARB_EXECUTOR_ADDR)
       throw new Error("EXECUTOR_PK and ARB_EXECUTOR_ADDR required for on-chain mode");
+    if (cfg.EXEC_MODE === "live" && cfg.MAINNET_OVERRIDE !== "I_KNOW_WHAT_I_AM_DOING") {
+      throw new Error("MAINNET GATED: EXEC_MODE=live requires MAINNET_OVERRIDE='I_KNOW_WHAT_I_AM_DOING'");
+    }
     const chain = cfg.EXEC_MODE === "live" ? bsc : bscTestnet;
     const rpc = cfg.EXEC_MODE === "live" ? cfg.BSC_RPC_HTTP_1 : cfg.BSC_TESTNET_RPC;
     this.account = privateKeyToAccount(cfg.EXECUTOR_PK as `0x${string}`);
@@ -72,9 +75,18 @@ export class OnchainExecutor {
         });
         const rcpt = await this.pub.waitForTransactionReceipt({ hash, timeout: 30_000 });
         if (rcpt.status === "success") {
+          let actualOut = (BigInt(sized.sizedAmountWei) + BigInt(p.expProfitWei)).toString();
+          for (const log of rcpt.logs) {
+            try {
+              const decoded = decodeEventLog({ abi: arbExecutorAbi, data: log.data, topics: log.topics });
+              if (decoded.eventName === "CycleExecuted") {
+                actualOut = (decoded.args as any).amountOut.toString();
+              }
+            } catch (e) { /* ignore unrelated logs */ }
+          }
           return { ...base, status: "executed", txHash: hash,
             gasWei: (rcpt.gasUsed * bumped).toString(),
-            amountOutWei: (BigInt(sized.sizedAmountWei) + BigInt(p.expProfitWei)).toString() };
+            amountOutWei: actualOut };
         }
         logger.warn({ hash, attempt }, "tx reverted on-chain, retrying");
       } catch (e) {

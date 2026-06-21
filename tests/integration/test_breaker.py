@@ -32,6 +32,15 @@ async def main():
     s = await circuit_breaker.current_state()
     print(f"after 3 consecutive failures: breaker = {s}")
     assert s == "TRIPPED"
-    print("\nPASS: circuit breaker trips on oracle divergence AND failure streak, halts trading")
+    # 4. drawdown breach also trips
+    await circuit_breaker.arm()
+    a_drawdown = anomaly.drawdown_breach(10.0, 7.0) # 10% drawdown >= 7% cap
+    assert a_drawdown, "should detect drawdown breach"
+    await circuit_breaker.trip(a_drawdown.detail)
+    s_drawdown = await circuit_breaker.current_state()
+    print(f"after drawdown breach: breaker = {s_drawdown}")
+    assert s_drawdown == "TRIPPED"
+
+    print("\nPASS: circuit breaker trips on oracle divergence, failure streak, and drawdown breach, halts trading")
 
 asyncio.run(main())

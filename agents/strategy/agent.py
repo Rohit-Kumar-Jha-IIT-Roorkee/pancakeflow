@@ -18,7 +18,7 @@ async def _adjust_confidence(opp: dict, base_conf: float) -> tuple[float, str]:
     """BONUS: LLM nudges confidence using recalled similar trades. Falls back to
     a deterministic rule when no API key. Never touches the arithmetic."""
     path = " -> ".join(opp["sym_path"])
-    recalled = memory.recall(f"arb cycle {path} bps {opp['net_bps']:.0f}", k=3)
+    recalled = await memory.recall(f"arb cycle {path} bps {opp['net_bps']:.0f}", k=3)
     if not recalled:
         return base_conf, "no prior memory"
     wins = sum(1 for r in recalled if r.get("status") == "executed" and r.get("pnl", 0) > 0)

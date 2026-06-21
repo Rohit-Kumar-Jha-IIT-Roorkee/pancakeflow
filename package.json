@@ -4,6 +4,7 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev:ingestion": "pnpm --filter @pancakeflow/ingestion dev",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint --if-present"
   }
 }

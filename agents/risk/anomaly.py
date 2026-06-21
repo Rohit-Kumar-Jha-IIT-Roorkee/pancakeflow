@@ -24,3 +24,9 @@ def consecutive_failures(fail_count: int, threshold: int = 3) -> Anomaly | None:
     if fail_count >= threshold:
         return Anomaly("consecutive_failures", "critical", f"{fail_count} failed txs in a row")
     return None
+
+def drawdown_breach(drawdown_pct: float, max_drawdown_pct: float) -> Anomaly | None:
+    if drawdown_pct >= max_drawdown_pct:
+        return Anomaly("drawdown_breach", "critical", f"drawdown {drawdown_pct:.1f}% >= cap {max_drawdown_pct:.1f}%")
+    return None
+

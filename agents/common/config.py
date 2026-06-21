@@ -1,5 +1,16 @@
 """Central env config for all Python agents. No magic, no extra deps."""
 import os
+import structlog
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ]
+)
+logger = structlog.get_logger()
 
 def env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)

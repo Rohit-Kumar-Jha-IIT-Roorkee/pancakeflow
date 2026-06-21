@@ -8,17 +8,30 @@ import hashlib, math, time
 from dataclasses import dataclass, field
 from ..common import config
 
-DIM = 64
+DIM = 384
+
+_model = None
 
 def _embed(text: str) -> list[float]:
-    """Deterministic bag-of-hashed-tokens embedding. Good enough for similarity
-    over short structured memos; replace with a real model in production."""
-    vec = [0.0] * DIM
-    for tok in text.lower().split():
-        h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
-        vec[h % DIM] += 1.0
-    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [v / norm for v in vec]
+    global _model
+    if _model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception:
+            _model = "fallback"
+            
+    if _model == "fallback":
+        # Deterministic bag-of-hashed-tokens fallback
+        import hashlib
+        vec = [0.0] * DIM
+        for tok in text.lower().split():
+            h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+            vec[h % DIM] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
+        
+    return _model.encode(text).tolist()
 
 def _cos(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
@@ -36,17 +49,22 @@ class TradeMemory:
                 from qdrant_client import QdrantClient
                 from qdrant_client.models import Distance, VectorParams
                 self._qdrant = QdrantClient(url=config.QDRANT_URL)
-                self._qdrant.recreate_collection(
-                    "trade_memos", vectors_config=VectorParams(size=DIM, distance=Distance.COSINE))
+                try:
+                    self._qdrant.get_collection("trade_memos")
+                except Exception:
+                    self._qdrant.create_collection(
+                        "trade_memos", vectors_config=VectorParams(size=DIM, distance=Distance.COSINE))
             except Exception:
                 self._qdrant = None
 
-    def add(self, context: str, outcome: dict) -> None:
-        vec = _embed(context)
+    async def add(self, context: str, outcome: dict) -> None:
+        import asyncio
+        vec = await asyncio.to_thread(_embed, context)
         if self._qdrant:
             try:
                 from qdrant_client.models import PointStruct
-                self._qdrant.upsert("trade_memos", [PointStruct(
+                # qdrant_client provides async methods, but we use sync client, so wrap it
+                await asyncio.to_thread(self._qdrant.upsert, "trade_memos", [PointStruct(
                     id=int(time.time() * 1e6) % (2**63), vector=vec,
                     payload={"text": context, **outcome})])
                 return
@@ -54,11 +72,12 @@ class TradeMemory:
                 pass
         self._mem.append(_Memo(context, vec, outcome, time.time()))
 
-    def recall(self, context: str, k: int = 3) -> list[dict]:
-        vec = _embed(context)
+    async def recall(self, context: str, k: int = 3) -> list[dict]:
+        import asyncio
+        vec = await asyncio.to_thread(_embed, context)
         if self._qdrant:
             try:
-                res = self._qdrant.search("trade_memos", vec, limit=k)
+                res = await asyncio.to_thread(self._qdrant.search, "trade_memos", vec, limit=k)
                 return [r.payload for r in res]
             except Exception:
                 pass

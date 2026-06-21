@@ -6,6 +6,8 @@ import asyncio, json
 from ..common import config, bus, state
 from ..common.schemas import TradeProposal, SizedTrade
 from . import profiles, limits, anomaly, circuit_breaker
+from ..portfolio import ledger, metrics
+from ..liquidity import agent as liquidity
 
 _fail_streak = 0
 
@@ -20,6 +22,25 @@ async def gate_proposal(p: TradeProposal) -> None:
     if await circuit_breaker.current_state() == "TRIPPED":
         return await _reject(p, "circuit breaker tripped")
 
+    # Drawdown gate
+    import datetime
+    today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    trades = await ledger.all_trades(500)
+    today_trades = [t for t in trades if str(t.get("ts", "")) >= today_str]
+    summary = metrics.summarize(today_trades)
+    current_dd = summary.get("max_drawdown_pct", 0.0)
+    a = anomaly.drawdown_breach(current_dd, profile.daily_max_drawdown_pct)
+    if a:
+        await circuit_breaker.trip(a.detail)
+        return await _reject(p, f"drawdown breach: {a.detail}")
+
+    # Token-safety gate
+    catalog = await liquidity.get_catalog()
+    if p.kind == "cycle":
+        for leg in p.legs:
+            if not liquidity.is_pool_safe(leg.pool, catalog, profile.allowed_tiers):
+                return await _reject(p, f"pool {leg.pool} tier not allowed for profile {profile.name}")
+
     open_n = await _open_position_count()
     ok, sized, reason = limits.size_and_check(
         int(p.amountInWei or "0"), config.CAPITAL_USD, profile, open_n, p.slippageBps)
@@ -32,7 +53,7 @@ async def gate_proposal(p: TradeProposal) -> None:
     if p.strategy in ("cross_pool_arb", "triangular_arb") and not profile.flash_arb_enabled and int(p.amountInWei) > int(config.CAPITAL_USD * 1e18):
         return await _reject(p, "flash arb disabled for profile; size exceeds inventory")
 
-    sized_wei = sized if (p.kind == "cycle" and int(p.amountInWei) > 0) else int(p.amountInWei or "0")
+    sized_wei = sized if ok else int(p.amountInWei or "0")
     st = SizedTrade(proposal=p, sizedAmountWei=str(sized_wei), profile=profile.name)
     await bus.publish(config.STREAM_TRADE, "trade.sized", st.model_dump())
     await _log(p.id, "risk", "sized", {"sized": sized_wei, "profile": profile.name, "reason": reason})

@@ -7,7 +7,7 @@ section math and net out gas. Deterministic; the LLM never runs here."""
 from __future__ import annotations
 import math
 from dataclasses import dataclass
-from .cycle_math import v2_amount_out, evaluate_cycle, optimal_two_hop_input
+from .cycle_math import amount_out_with_fee, evaluate_cycle, optimal_two_hop_input
 
 @dataclass
 class Edge:
@@ -15,32 +15,48 @@ class Edge:
     pool: str; pool_type: int
     reserve_in: int; reserve_out: int
     sym_in: str; sym_out: str
+    fee_bps: int
 
 def _rate(e: Edge) -> float:
     """Marginal (small-trade) rate out/in including fee, for graph weighting."""
     if e.reserve_in <= 0 or e.reserve_out <= 0:
         return 0.0
     probe = max(1, e.reserve_in // 10000)            # 0.01% probe trade
-    out = v2_amount_out(probe, e.reserve_in, e.reserve_out)
+    out = amount_out_with_fee(probe, e.reserve_in, e.reserve_out, e.fee_bps)
     return out / probe if probe else 0.0
 
 def build_edges(pools: list[dict]) -> list[Edge]:
-    """Each V2 pool yields two directed edges. (V3 handled via quoter in P4;
-    here we use V2 reserves which dominate Pancake liquidity.)"""
+    """Each V2 pool yields two directed edges. V3 uses virtual reserves computed
+    from liquidity and sqrtPriceX96 for small-trade approximations."""
     edges: list[Edge] = []
     for p in pools:
-        if int(p.get("poolType", 2)) != 2:
-            continue
+        ptype = int(p.get("poolType", 2))
+        fee = int(p.get("feeBps", 25))
         try:
-            r0 = int(p["reserve0"]); r1 = int(p["reserve1"])
+            if ptype == 2:
+                r0, r1 = int(p["reserve0"]), int(p["reserve1"])
+            elif ptype == 3:
+                liq = int(p.get("liquidity", 0))
+                sqrt_px96 = int(p.get("sqrtPriceX96", 0))
+                if liq == 0 or sqrt_px96 == 0:
+                    continue
+                # x = L / sqrtP; y = L * sqrtP
+                # To maintain precision, factor out 2^96
+                # r0 (x) = (liq << 96) // sqrt_px96
+                # r1 (y) = (liq * sqrt_px96) >> 96
+                r0 = (liq << 96) // sqrt_px96
+                r1 = (liq * sqrt_px96) >> 96
+            else:
+                continue
         except (KeyError, ValueError):
             continue
+            
         if r0 <= 0 or r1 <= 0:
             continue
         t0, t1 = p["token0"], p["token1"]
         s0, s1 = p.get("symbol0", t0[:6]), p.get("symbol1", t1[:6])
-        edges.append(Edge(t0, t1, p["address"], 2, r0, r1, s0, s1))
-        edges.append(Edge(t1, t0, p["address"], 2, r1, r0, s1, s0))
+        edges.append(Edge(t0, t1, p["address"], ptype, r0, r1, s0, s1, fee))
+        edges.append(Edge(t1, t0, p["address"], ptype, r1, r0, s1, s0, fee))
     return edges
 
 @dataclass
@@ -107,10 +123,13 @@ def find_negative_cycle(edges: list[Edge]) -> ArbCycle | None:
 
 def size_and_score(cycle: ArbCycle, gas_wei: int, eth_price_per_start: float = 0.0) -> dict | None:
     """Size the cycle, net out gas, return a scored opportunity or None."""
-    hops = [(e.reserve_in, e.reserve_out) for e in cycle.edges]
+    hops = [(e.reserve_in, e.reserve_out, e.pool_type, e.fee_bps) for e in cycle.edges]
     # closed form for 2-hop; golden-section otherwise
     if len(hops) == 2:
-        amt = optimal_two_hop_input(hops[0][0], hops[0][1], hops[1][0], hops[1][1])
+        amt = optimal_two_hop_input(
+            hops[0][0], hops[0][1], hops[0][3],
+            hops[1][0], hops[1][1], hops[1][3]
+        )
     else:
         amt = _golden_section(hops)
     if amt <= 0:
