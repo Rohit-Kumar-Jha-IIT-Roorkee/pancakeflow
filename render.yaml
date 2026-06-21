@@ -3,6 +3,7 @@ services:
   - type: redis
     name: pancake-redis
     plan: free
+    ipAllowList: []              # allow all — required by Render blueprint schema
 
   # ── Python API (FastAPI gateway) ─────────────────────────────────────────────
   - type: web
@@ -23,15 +24,13 @@ services:
       - key: CAPITAL_USD
         value: "10000"
       - key: API_KEY
-        generateValue: true    # Render generates a secret; set NEXT_PUBLIC_API_KEY to match
+        generateValue: true
 
   # ── Python Agents (strategy + risk + portfolio swarm) ────────────────────────
   - type: worker
     name: pancake-agents
     env: python
     buildCommand: "pip install -r agents/requirements.txt"
-    # Seed demo market state on every (re)start, then run the agent loop.
-    # Without live ingestion, seeding ensures the scanner always has pools to scan.
     startCommand: "python scripts/seed_market.py && python -m agents.main"
     envVars:
       - key: REDIS_URL
@@ -53,12 +52,9 @@ services:
     buildCommand: "npm install -g pnpm && pnpm install && pnpm --filter @pancakeflow/web build"
     startCommand: "pnpm --filter @pancakeflow/web start"
     envVars:
+      # After first deploy: paste the pancake-api URL here and redeploy dashboard.
+      # Format: https://pancake-api-xxxx.onrender.com  (no trailing slash)
       - key: NEXT_PUBLIC_API
-        fromService:
-          type: web
-          name: pancake-api
-          property: url
-      # Set this to the same value as the API_KEY above so the NL console works.
-      # On Render, copy the generated API_KEY value here after first deploy.
+        sync: false
       - key: NEXT_PUBLIC_API_KEY
         value: demo-key
