@@ -58,9 +58,9 @@ services:
     buildCommand: "pnpm install && pnpm --filter @pancakeflow/web build"
     startCommand: "pnpm --filter @pancakeflow/web start"
     envVars:
-      # After first deploy: paste the pancake-api URL here and redeploy dashboard.
-      # Format: https://pancake-api-xxxx.onrender.com  (no trailing slash)
+      - key: API_URL
+        value: "https://pancake-api.onrender.com"
       - key: NEXT_PUBLIC_API
-        sync: false
+        value: "https://pancake-api.onrender.com"
       - key: NEXT_PUBLIC_API_KEY
         value: demo-key
